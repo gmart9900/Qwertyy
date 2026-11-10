@@ -6,7 +6,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HOME=/root
 
 # Desktop, VNC, noVNC and basic tools
-# (snapd, systemd and init are dropped: they don't work in a plain container and aren't needed)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         xfce4 xfce4-goodies \
         tigervnc-standalone-server tigervnc-common \
@@ -17,8 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/share/novnc/vnc.html /usr/share/novnc/index.html \
     && rm -rf /var/lib/apt/lists/*
 
-# Firefox as a real .deb from Mozilla's official APT repo.
-# (Ubuntu's own "firefox" package is a snap stub that doesn't work in Docker.)
+# Firefox as a real .deb from Mozilla's official APT repo
 RUN install -d -m 0755 /etc/apt/keyrings \
     && curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg \
          -o /etc/apt/keyrings/packages.mozilla.org.asc \
@@ -32,8 +30,8 @@ RUN install -d -m 0755 /etc/apt/keyrings \
     && apt-get install -y firefox \
     && rm -rf /var/lib/apt/lists/*
 
-# VNC session startup (without this you get a blank grey screen)
-COPY <<'EOF' /root/.vnc/xstartup
+# VNC session startup, in the NEW TigerVNC config location
+COPY <<'EOF' /root/.config/tigervnc/xstartup
 #!/bin/sh
 unset SESSION_MANAGER
 unset DBUS_SESSION_BUS_ADDRESS
@@ -45,11 +43,14 @@ COPY <<'EOF' /usr/local/bin/start.sh
 #!/bin/bash
 set -e
 
+# Make sure the legacy dir doesn't trigger the migration code
+rm -rf /root/.vnc
+
 # Clean up stale locks from previous runs
 rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
 
 vncserver :1 -localhost no -SecurityTypes None -geometry 1024x768 \
-    -xstartup /root/.vnc/xstartup --I-KNOW-THIS-IS-INSECURE
+    -xstartup /root/.config/tigervnc/xstartup --I-KNOW-THIS-IS-INSECURE
 
 # Self-signed cert for noVNC
 if [ ! -f /root/self.pem ]; then
@@ -61,7 +62,7 @@ fi
 exec websockify --web=/usr/share/novnc/ --cert=/root/self.pem 6080 localhost:5901
 EOF
 
-RUN chmod +x /root/.vnc/xstartup /usr/local/bin/start.sh \
+RUN chmod +x /root/.config/tigervnc/xstartup /usr/local/bin/start.sh \
     && touch /root/.Xauthority
 
 EXPOSE 5901 6080
