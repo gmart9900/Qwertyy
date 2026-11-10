@@ -1,17 +1,69 @@
-FROM --platform=linux/amd64 ubuntu:22.04
+# syntax=docker/dockerfile:1.4
+FROM --platform=linux/amd64 ubuntu:26.04
 
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt update -y && apt install --no-install-recommends -y xfce4 xfce4-goodies tigervnc-standalone-server novnc websockify sudo xterm init systemd snapd vim net-tools curl wget git tzdata
-RUN apt update -y && apt install -y dbus-x11 x11-utils x11-xserver-utils x11-apps
-RUN apt install software-properties-common -y
-RUN add-apt-repository ppa:mozillateam/ppa -y
-RUN echo 'Package: *' >> /etc/apt/preferences.d/mozilla-firefox
-RUN echo 'Pin: release o=LP-PPA-mozillateam' >> /etc/apt/preferences.d/mozilla-firefox
-RUN echo 'Pin-Priority: 1001' >> /etc/apt/preferences.d/mozilla-firefox
-RUN echo 'Unattended-Upgrade::Allowed-Origins:: "LP-PPA-mozillateam:jammy";' | tee /etc/apt/apt.conf.d/51unattended-upgrades-firefox
-RUN apt update -y && apt install -y firefox
-RUN apt update -y && apt install -y xubuntu-icon-theme
-RUN touch /root/.Xauthority
-EXPOSE 5901
-EXPOSE 6080
-CMD bash -c "vncserver -localhost no -SecurityTypes None -geometry 1024x768 --I-KNOW-THIS-IS-INSECURE && openssl req -new -subj "/C=JP" -x509 -days 365 -nodes -out self.pem -keyout self.pem && websockify -D --web=/usr/share/novnc/ --cert=self.pem 6080 localhost:5901 && tail -f /dev/null"
+ENV DEBIAN_FRONTEND=noninteractive \
+    DISPLAY=:1 \
+    HOME=/root
+
+# Desktop, VNC, noVNC and basic tools
+# (snapd, systemd and init are dropped: they don't work in a plain container and aren't needed)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        xfce4 xfce4-goodies \
+        tigervnc-standalone-server tigervnc-common \
+        novnc websockify \
+        dbus-x11 x11-utils x11-xserver-utils x11-apps \
+        xterm sudo vim net-tools curl wget git tzdata \
+        openssl ca-certificates gnupg xubuntu-icon-theme \
+    && ln -sf /usr/share/novnc/vnc.html /usr/share/novnc/index.html \
+    && rm -rf /var/lib/apt/lists/*
+
+# Firefox as a real .deb from Mozilla's official APT repo.
+# (Ubuntu's own "firefox" package is a snap stub that doesn't work in Docker.)
+RUN install -d -m 0755 /etc/apt/keyrings \
+    && curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg \
+         -o /etc/apt/keyrings/packages.mozilla.org.asc \
+    && echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" \
+         > /etc/apt/sources.list.d/mozilla.list \
+    && printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1001\n' \
+         > /etc/apt/preferences.d/mozilla-firefox \
+    && echo 'Unattended-Upgrade::Allowed-Origins:: "packages.mozilla.org:mozilla";' \
+         > /etc/apt/apt.conf.d/51unattended-upgrades-firefox \
+    && apt-get update \
+    && apt-get install -y firefox \
+    && rm -rf /var/lib/apt/lists/*
+
+# VNC session startup (without this you get a blank grey screen)
+COPY <<'EOF' /root/.vnc/xstartup
+#!/bin/sh
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+exec dbus-launch --exit-with-session startxfce4
+EOF
+
+# Container entrypoint script
+COPY <<'EOF' /usr/local/bin/start.sh
+#!/bin/bash
+set -e
+
+# Clean up stale locks from previous runs
+rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
+
+vncserver :1 -localhost no -SecurityTypes None -geometry 1024x768 \
+    -xstartup /root/.vnc/xstartup --I-KNOW-THIS-IS-INSECURE
+
+# Self-signed cert for noVNC
+if [ ! -f /root/self.pem ]; then
+    openssl req -new -subj "/C=JP" -x509 -days 365 -nodes \
+        -out /root/self.pem -keyout /root/self.pem
+fi
+
+# Run websockify in the foreground so the container stays alive
+exec websockify --web=/usr/share/novnc/ --cert=/root/self.pem 6080 localhost:5901
+EOF
+
+RUN chmod +x /root/.vnc/xstartup /usr/local/bin/start.sh \
+    && touch /root/.Xauthority
+
+EXPOSE 5901 6080
+
+CMD ["/usr/local/bin/start.sh"]
